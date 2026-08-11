@@ -1,0 +1,11 @@
+task: cu_dimerization_cpmace
+facet: "310"
+solvent: water
+cations: [Cs, K]
+target_potentials_v: [-0.3, -0.5, -0.8]
+mlip: cp-mace
+audit_with_cp_dft: true
+opes:
+  barrier_ev: 5.0
+  pace: 500
+  upper_wall_angstrom: 6.0

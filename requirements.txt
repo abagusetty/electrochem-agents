@@ -1,0 +1,10 @@
+numpy
+scipy
+pymatgen
+ase
+torch
+mace-torch
+fairchem
+pyyaml
+typer
+matplotlib

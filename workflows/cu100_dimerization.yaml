@@ -1,0 +1,13 @@
+task: cu_dimerization
+facet: "100"
+solvent: water
+cations: [Cs, K, Li]
+cation_counts: [0, 2, 5, 8]
+cell: "8x8"
+trajectory_length_ns: 7.0
+mlip: esen-oc25
+audit_with_cp_dft: false
+opes:
+  barrier_ev: 5.0
+  pace: 500
+  upper_wall_angstrom: 6.0
