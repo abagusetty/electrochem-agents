@@ -2,78 +2,101 @@
 
 ## Phase 1 -- Constant-charge MVP (eSEN-OC25 + ASE/PLUMED OPES) -- IMPLEMENTED
 
-- systems/water_geometry.py, systems/packing.py, systems/io_utils.py,
-  systems/cu_interface.py -- interface construction (OC25 recipe).
-- mlip/esen_oc25.py -- fairchem-core >=2.x unified API. OC25 checkpoints
-  are gated under Meta's FAIR Chemistry License (huggingface.co/facebook/OC25).
-- mlip/cp_mace_wrapper.py -- CP-MACE dataset writer / mace_run_train wrapper.
-- md/opes_runner.py, md/ase_opes_runner.py -- PLUMED OPES matching Methods 5.4.
-- analysis/free_energy.py -- reweighting, convergence checks, orientation analysis.
-- 23/23 unit tests passing on pure numpy (no ase/pymatgen/fairchem/JDFTx required).
+- systems/, mlip/, md/ -- interface construction, eSEN-OC25 (fairchem-core
+  >=2.x), PLUMED OPES matching arXiv:2509.17862 Methods 5.1-5.4.
+- analysis/free_energy.py -- reweighting, convergence checks.
+- 23/23 unit tests passing on pure numpy.
 
 ## Phase 2 -- CP-DFT audit module -- ON HOLD (paused 2026-08-12)
 
-cp_dft/jdftx_interface.py implements a pymatgen.io.jdftx-first design.
-Verified against pymatgen-core source. Output-side attribute names on
-JDFTXOutfile were NOT yet confirmed before this work was paused.
+cp_dft/jdftx_interface.py: pymatgen.io.jdftx-first design, verified
+against pymatgen-core source; output-side attribute names NOT yet
+confirmed before pausing.
 
 ## Phase 3 -- CP-MACE for Cu interfaces
 
-- Use mlip/cp_mace_wrapper.py to build CP-MACE-format datasets from OC25 +
-  CP-DFT labels; train FermiMACE; validate against CP-DFT/eSEN-OC25.
+- mlip/cp_mace_wrapper.py: CP-MACE dataset writer / mace_run_train wrapper.
 
-## Phase 4 -- Agentic orchestration -- IMPLEMENTED, UPDATED 2026-08-12 (ALCF backend)
+## Phase 4 -- Agentic orchestration -- IMPLEMENTED, UPDATED 2026-08-12 (self-learning exploration)
 
-Built on AG2/AutoGen, matching github.com/ANL-NST/LAMMPS-Agents'
-architecture: a Manager agent coordinating specialist agents (System
-Builder, MLIP, Enhanced-Sampling, Results Analyst, Validation) via
-GroupChat, each wired to real tool functions in systems/, mlip/, md/,
-analysis/.
+Combines two architectural references:
 
-LLM backend: **ALCF Inference Endpoints**
-(docs.alcf.anl.gov/services/inference-endpoints/), verified against
-Argonne's own reference implementation
-(github.com/argonne-lcf/ATPESC_MachineLearning/tree/master/13_agentic_workflows_for_science
-and .../11_Agentic_tools_part1, and .../14_agentic_tools_part2/ATPESC-Agents-Tutorial.ipynb).
+1. **github.com/ANL-NST/LAMMPS-Agents**: Manager + specialist agents
+   (System Builder, MLIP, Enhanced-Sampling, Results Analyst, Validation)
+   via AG2/AutoGen GroupChat, each wired to real tool functions.
+2. **Fei, Rendy, Yang et al., "Agentic LLM Reasoning in a Self-Driving
+   Laboratory for Air-Sensitive Lithium Halide Spinel Conductors"
+   (arXiv:2604.11957)**: splitting EXPLORATION into two complementary,
+   behaviorally distinct reasoning modes rather than one monolithic
+   decision-maker. Their code repo (github.com/CederGroupHub/alab_gpss_public)
+   is mostly lab-automation infrastructure (backend/system/ui/daemon) plus
+   post-analysis scripts (claim extraction, causal-effect extraction,
+   Shannon-surprise novelty metric); the agent prompts themselves are not
+   public, so the implementation here is built from the paper's detailed
+   textual description of each agent's role, not copied code.
 
-- agents/llm_backend.py -- ALCFLLMConfig + get_alcf_access_token(), using
-  the EXACT token-resolution precedence confirmed from ATPESC's own
-  alcf_llm.py source:
-    1. `ALCF_ACCESS_TOKEN` env var (manual override, e.g. after
-       `source scripts/get_alcf_token.sh`).
-    2. `inference_auth_token.get_access_token()` (auto-refreshing cached
-       Globus token; interactive login only on first use).
-  `ALCF_BASE_URL` env var is also overridable, matching ATPESC's
-  .env.example convention. `stream: False` is hardcoded (Globus backend
-  does not support streaming, confirmed). Verified with 5 manual checks
-  (env-var precedence, base_url override precedence, default fallback,
-  explicit-arg precedence over env, full to_autogen_config() shape) --
-  all passed without needing network access or a real token.
-  `check_model_availability()` queries ALCF's `/jobs` endpoint for
-  Live/Starting/Queued/Offline status before committing to a model.
-- Model assignment (agents/agent_factory.py) follows ALCF's documented
-  Tool-Calling (T) / Reasoning (R) capability flags per role:
-    - Manager, Results Analyst (need both T and R): default
-      `Qwen/Qwen3-235B-A22B` (also `Qwen/QwQ-32B` available).
-    - System Builder, MLIP, Enhanced-Sampling, Validation Agents (mostly
-      deterministic tool dispatch): default `meta-llama/Llama-3.3-70B-Instruct`.
-  Note: ATPESC's own tutorial notebook uses `openai/gpt-oss-120b` as a
-  general example, but that model is Reasoning-only (no confirmed
-  Tool-Calling) on this endpoint as of this snapshot -- do not use it for
-  AG2 function-calling agents; it would be fine for a pure-text-reasoning
-  role with no tool registration.
-- agents/system_messages.py -- domain-specific reasoning rules grounded
-  in arXiv:2509.17862 reference values.
-- agents/reasoning.py -- deterministic (non-LLM) comparison of results
-  against anchor-paper reference values; verified with 5 manual cases.
-- agents/agent_factory.py -- builds each ConversableAgent with the
-  appropriate ALCF model tier and registers its tool functions.
-- agents/manager.py -- GroupChat/GroupChatManager orchestration; entry
-  point is workflows/run_workflow.py.
+### New exploration agents (agents/system_messages.py, agents/reasoning.py)
+
+- **AbnormalityDetectionAgent (abductive)**: calls
+  `reasoning.find_local_abnormalities` to flag records that deviate from
+  their LOCAL chemical neighbors (same facet, nearby charge/potential) --
+  not just fixed literature values, since exploration moves beyond what
+  arXiv:2509.17862 studied. Generates a specific hypothesis for each
+  flagged deviation and proposes ONE targeted follow-up (longer sampling,
+  a CP-DFT audit, or an intermediate state point), tagged with a
+  `strategy` field for traceability (per the anchor paper's finding that
+  untraceable monolithic reasoning obscures whether success reflects real
+  insight). Verified: correctly flagged a deliberately inserted outlier
+  record in a 7-record synthetic test, plus correctly identified two
+  additional records whose local neighbor mean was skewed by that
+  outlier -- a defensible, if conservative, behavior for a first pass.
+- **PatternFindingAgent (inductive)**: calls `reasoning.distill_patterns`
+  to get a deterministic statistical backbone (per-facet charge-slope,
+  facet ranking by mean reaction energy, cation-effect magnitude), then
+  proposes new state points that extrapolate distilled trends into
+  unexplored (facet, charge, cation) space. Verified: on synthetic data
+  matching the anchor paper's actual Cu(100) vs Cu(310) trend, correctly
+  ranked Cu(310) as more favorable than Cu(100) -- reproducing the real
+  finding, not a coincidence of the synthetic setup.
+- **BOAssistedPatternFindingAgent**: activated once
+  `ElectrochemWorkflowManager.accumulated_records` exceeds
+  `bo_transition_threshold` (default 30; the anchor paper's campaign
+  transitioned after 289 of 352 samples -- ours is scaled down since each
+  record here is a full OPES campaign, not a single synthesis run).
+  Calls `reasoning.propose_bo_candidates`, a dependency-free novelty +
+  extrapolated-favorability scoring heuristic (swap in a real
+  `sklearn.gaussian_process.GaussianProcessRegressor` for calibrated
+  uncertainty if available) that ranks not-yet-run (facet, charge, cation)
+  candidates. Verified: correctly prioritized a brand-new facet and a
+  favorable-facet extrapolation over a low-novelty interpolation point.
+
+### Manager updates (agents/manager.py)
+
+`ElectrochemWorkflowManager` now tracks `accumulated_records` (a list of
+`agents.reasoning.SimulationRecord`) and swaps the inductive agent
+variant automatically via `should_use_bo_assisted_agent()`, verified with
+a manual threshold-crossing test (including correct exclusion of a
+non-converged record from the count).
+
+### LLM backend: ALCF Inference Endpoints
+
+Per docs.alcf.anl.gov/services/inference-endpoints/ and Argonne's own
+reference implementation (github.com/argonne-lcf/ATPESC_MachineLearning,
+13_agentic_workflows_for_science and 11_Agentic_tools_part1):
+- Token resolution: `ALCF_ACCESS_TOKEN` env var first, then
+  `inference_auth_token.get_access_token()` (auto-refreshing Globus token).
+- `stream: False` hardcoded (Globus backend does not support streaming).
+- Model tiers: reasoning+tool-calling agents (Manager, Results Analyst,
+  and all three exploration agents) default to `Qwen/Qwen3-235B-A22B`;
+  tool-only agents default to `meta-llama/Llama-3.3-70B-Instruct`.
 
 Remaining Phase 4 work:
-- End-to-end run against the live ALCF endpoint with a real Globus token
-  (all logic verified in isolation; no live network call has been made).
-- Confirm current model availability/capability flags via
-  `check_model_availability()` before a production run.
-- Wire the Validation Agent's three checks to concrete function calls.
+- End-to-end run against the live ALCF endpoint with real accumulated
+  data (all logic verified in isolation with synthetic records; no live
+  network call or real simulation campaign has been run yet).
+- Consider swapping `propose_bo_candidates`' distance-based heuristic for
+  a real Gaussian Process once enough real data exists to fit one
+  meaningfully.
+- Add the "Shannon surprise" style novelty metric from
+  CederGroupHub/alab_gpss_public's post_analysis/ as a possible
+  complementary exploration-value signal (not yet implemented).
