@@ -6,6 +6,8 @@ torch
 mace-torch
 fairchem-core
 ag2
+openai
+requests
 pyyaml
 typer
 matplotlib

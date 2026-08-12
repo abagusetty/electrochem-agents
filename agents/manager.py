@@ -1,9 +1,9 @@
 """
 Top-level orchestrator for the electrochemical simulation agentic
 workflow, mirroring LAMMPS-Agents' manager/GroupChat pattern
-(github.com/ANL-NST/LAMMPS-Agents: a "manager" ConversableAgent with
-explicit workflow-order rules in its system message, coordinating
-specialist agents through AutoGen's GroupChat/GroupChatManager).
+(github.com/ANL-NST/LAMMPS-Agents). LLM access is via ALCF Inference
+Endpoints (agents.llm_backend.ALCFLLMConfig); see agents/agent_factory.py
+for the reasoning-vs-tool-only model split.
 
 This module is intentionally thin glue: it builds the agent group and
 starts the conversation. The actual reasoning is in agents/system_messages.py
@@ -16,7 +16,8 @@ this project.
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from agents.agent_factory import ElectrochemAgentFactory, LLMConfig
+from agents.agent_factory import ElectrochemAgentFactory
+from agents.llm_backend import ALCFLLMConfig
 
 
 @dataclass
@@ -39,8 +40,12 @@ class ElectrochemWorkflowManager:
     given WorkflowRequest.
     """
 
-    def __init__(self, llm_config: Optional[LLMConfig] = None):
-        self.factory = ElectrochemAgentFactory(llm_config=llm_config)
+    def __init__(self, reasoning_llm_config: Optional[ALCFLLMConfig] = None,
+                 tool_llm_config: Optional[ALCFLLMConfig] = None):
+        self.factory = ElectrochemAgentFactory(
+            reasoning_llm_config=reasoning_llm_config,
+            tool_llm_config=tool_llm_config,
+        )
 
     def build_group_chat(self, max_round: int = 30):
         try:
@@ -64,9 +69,12 @@ class ElectrochemWorkflowManager:
             messages=[],
             max_round=max_round,
         )
+        # The group-level manager needs to weigh handoffs across all
+        # agents, so it uses the reasoning-capable LLM config even though
+        # individual specialist agents may use the lighter tool-only model.
         group_chat_manager = GroupChatManager(
             groupchat=group_chat,
-            llm_config=self.factory.llm_config.to_autogen_config(),
+            llm_config=self.factory.reasoning_llm_config.to_autogen_config(),
         )
         return group_chat_manager, user_proxy
 
