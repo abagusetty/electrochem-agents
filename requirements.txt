@@ -8,6 +8,7 @@ fairchem-core
 ag2
 openai
 requests
+globus-sdk
 pyyaml
 typer
 matplotlib

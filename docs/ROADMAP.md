@@ -14,11 +14,8 @@
 ## Phase 2 -- CP-DFT audit module -- ON HOLD (paused 2026-08-12)
 
 cp_dft/jdftx_interface.py implements a pymatgen.io.jdftx-first design.
-Verified against pymatgen-core source: JDFTXInfile is a `dict` subclass
-with a real `from_structure()` classmethod; `target-mu` is a confirmed
-real tag; `is_gc` is set via `key_exists("target-mu", text)`. Output-side
-attribute names on JDFTXOutfile were NOT yet confirmed before this work
-was paused -- verify before relying on `run_jdftx_single_point()`.
+Verified against pymatgen-core source. Output-side attribute names on
+JDFTXOutfile were NOT yet confirmed before this work was paused.
 
 ## Phase 3 -- CP-MACE for Cu interfaces
 
@@ -34,27 +31,37 @@ GroupChat, each wired to real tool functions in systems/, mlip/, md/,
 analysis/.
 
 LLM backend: **ALCF Inference Endpoints**
-(docs.alcf.anl.gov/services/inference-endpoints/), not a commercial API.
+(docs.alcf.anl.gov/services/inference-endpoints/), verified against
+Argonne's own reference implementation
+(github.com/argonne-lcf/ATPESC_MachineLearning/tree/master/13_agentic_workflows_for_science
+and .../11_Agentic_tools_part1, and .../14_agentic_tools_part2/ATPESC-Agents-Tutorial.ipynb).
 
-- agents/llm_backend.py -- ALCFLLMConfig: builds an AG2 `llm_config`
-  pointed at ALCF's OpenAI-compatible vLLM endpoint
-  (https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1),
-  authenticated via a Globus access token from the `inference_auth_token.py`
-  helper (NOT a static API key -- tokens are valid 48h with auto-refresh,
-  weekly re-auth required). `stream: False` is hardcoded per ALCF's
-  documented limitation (the Globus backend does not support streaming).
-  `check_model_availability()` queries ALCF's `/jobs` endpoint so a
-  workflow can check Live/Starting/Queued/Offline status before
-  committing to a model (cold starts can take 10-15 minutes).
+- agents/llm_backend.py -- ALCFLLMConfig + get_alcf_access_token(), using
+  the EXACT token-resolution precedence confirmed from ATPESC's own
+  alcf_llm.py source:
+    1. `ALCF_ACCESS_TOKEN` env var (manual override, e.g. after
+       `source scripts/get_alcf_token.sh`).
+    2. `inference_auth_token.get_access_token()` (auto-refreshing cached
+       Globus token; interactive login only on first use).
+  `ALCF_BASE_URL` env var is also overridable, matching ATPESC's
+  .env.example convention. `stream: False` is hardcoded (Globus backend
+  does not support streaming, confirmed). Verified with 5 manual checks
+  (env-var precedence, base_url override precedence, default fallback,
+  explicit-arg precedence over env, full to_autogen_config() shape) --
+  all passed without needing network access or a real token.
+  `check_model_availability()` queries ALCF's `/jobs` endpoint for
+  Live/Starting/Queued/Offline status before committing to a model.
 - Model assignment (agents/agent_factory.py) follows ALCF's documented
   Tool-Calling (T) / Reasoning (R) capability flags per role:
-    - Manager, Results Analyst (need both T and R -- reasoning about
-      convergence/literature comparisons, not just dispatching calls):
-      default `Qwen/Qwen3-235B-A22B` (also `Qwen/QwQ-32B` available).
+    - Manager, Results Analyst (need both T and R): default
+      `Qwen/Qwen3-235B-A22B` (also `Qwen/QwQ-32B` available).
     - System Builder, MLIP, Enhanced-Sampling, Validation Agents (mostly
       deterministic tool dispatch): default `meta-llama/Llama-3.3-70B-Instruct`.
-  This model list is a snapshot from the ALCF docs (2026-08-12) and may
-  change; call `check_model_availability()` before a production run.
+  Note: ATPESC's own tutorial notebook uses `openai/gpt-oss-120b` as a
+  general example, but that model is Reasoning-only (no confirmed
+  Tool-Calling) on this endpoint as of this snapshot -- do not use it for
+  AG2 function-calling agents; it would be fine for a pure-text-reasoning
+  role with no tool registration.
 - agents/system_messages.py -- domain-specific reasoning rules grounded
   in arXiv:2509.17862 reference values.
 - agents/reasoning.py -- deterministic (non-LLM) comparison of results
@@ -65,11 +72,8 @@ LLM backend: **ALCF Inference Endpoints**
   point is workflows/run_workflow.py.
 
 Remaining Phase 4 work:
-- End-to-end run against the live ALCF endpoint (agents and reasoning
-  logic are implemented and unit-verified in isolation; llm_backend.py's
-  token-fetch/config logic verified without network calls, but no live
-  ALCF request has been made yet).
+- End-to-end run against the live ALCF endpoint with a real Globus token
+  (all logic verified in isolation; no live network call has been made).
 - Confirm current model availability/capability flags via
-  `check_model_availability()` before a production run, since ALCF's
-  model roster and hot/cold status changes over time.
+  `check_model_availability()` before a production run.
 - Wire the Validation Agent's three checks to concrete function calls.
