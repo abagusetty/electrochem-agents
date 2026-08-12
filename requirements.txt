@@ -1,10 +1,10 @@
 numpy
 scipy
 pymatgen
-ase
+ase>=3.23.0
 torch
 mace-torch
-fairchem
+fairchem-core
 pyyaml
 typer
 matplotlib
