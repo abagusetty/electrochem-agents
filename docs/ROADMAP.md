@@ -100,3 +100,63 @@ Remaining Phase 4 work:
 - Add the "Shannon surprise" style novelty metric from
   CederGroupHub/alab_gpss_public's post_analysis/ as a possible
   complementary exploration-value signal (not yet implemented).
+
+## Phase 3 addendum -- CP-MACE simulation driver (2026-08-12)
+
+mlip/cp_mace_simulation.py adds a constant-potential MD driver, built on
+two facts confirmed directly from github.com/yuanyue-liu-group/CP-MACE
+source (via GitHub code search, since raw file fetches failed for this
+repo in this session):
+
+- CP-MACE's simulation layer is entirely ASE-based: the MACECalculator
+  (mace/calculators/mace.py) is an `ase.calculators.calculator.Calculator`
+  subclass, and their own `simulation/slow_growth/simulate.py` /
+  `simulation/metadynamics/simulate.py` drivers use `ase.Atoms`,
+  `ase.io`, `ase.md.velocitydistribution`. ASE is not optional for
+  CP-MACE -- it is the foundation.
+- Their constant-potential physics lives in a custom `NoseHoover`
+  integrator (simulation/slow_growth/integrator.py, textually identical
+  in simulation/metadynamics/integrator.py), which implements a Nose-
+  Hoover chain PLUS an extra electronic degree of freedom coupled via
+  `Mne` (fictitious electron mass), `eta_length` (chain length), and
+  `targetmu` (target electrode potential). Confirmed fragments: class
+  signature `NoseHoover(MolecularDynamics)`, `step()` opening with
+  `accel = self.atoms.get_forces() / self.atoms.get_masses().reshape(-1, 1)`,
+  and simulate.py's exact unit-conversion convention
+  (`integrator_config["timestep"] *= units.fs`;
+  `integrator_config["temperature"] *= units.kB` when integrator is
+  NoseHoover/NoseHooverChain).
+- PLUMED does NOT substitute for the integrator. Even CP-MACE's own
+  metadynamics mode specifies `integrator: NoseHoover` in its inputs.yml
+  while also importing `ase.calculators.plumed.Plumed` in simulate.py --
+  PLUMED wraps the CALCULATOR (adds CV bias forces), NoseHoover remains
+  the INTEGRATOR (steps positions/velocities and the electron DOF
+  forward). These are complementary layers, confirmed from their own
+  architecture, not alternatives.
+
+DESIGN DECISION: the full internal NoseHoover algorithm (chain
+propagation, electron-coupling equations of motion) could not be
+retrieved in full via available tools in this session -- GitHub code
+search returns short match fragments only, and raw.githubusercontent.com
+fetches failed for this repo. Rather than reconstruct/fabricate the
+missing internals and risk silently wrong constant-potential physics,
+`mlip/cp_mace_simulation.py` imports the REAL `NoseHoover` class live
+from a user-provided local CP-MACE checkout
+(`load_cp_mace_integrator_class`, via `importlib.util` from
+`<repo>/simulation/{slow_growth,metadynamics}/integrator.py`), rather
+than vendoring a copy into this repo. This also avoids future drift from
+upstream CP-MACE changes.
+
+`CPMACEIntegratorConfig.to_cp_mace_dict()` mirrors CP-MACE's own
+`integrator_config` YAML schema exactly (timestep, temperature, ttime,
+constraints, increm, Mne, eta_length, targetmu, plus shaketol/
+shakemaxiter for metadynamics mode) -- verified against the literal
+values in their published slow_growth/inputs.yml and
+metadynamics/inputs.yml.
+
+Remaining work: obtain full NoseHoover source (e.g. via direct repo
+clone rather than API-based fetching) to confirm the live-imported class
+still matches this module's assumptions about its public API
+(`NoseHoover(atoms, timestep, temperature=..., ttime=..., constraints=...,
+increm=..., Mne=..., eta_length=..., targetmu=..., **kwargs)` and a
+`.run(steps)` method) before running on real hardware.
