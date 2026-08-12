@@ -1,29 +1,44 @@
 """
-PLUMED OPES enhanced-sampling driver for the CO-CO dimerization CV,
-following the protocol in Sahoo et al. (arXiv:2509.17862, Methods 5.4).
-
-TODO:
-- Write PLUMED input (OPES_METAD, adaptive Gaussian kernels, upper wall at 6 A).
-- Support convergence diagnostics: block uncertainty, time-resolved dG(t).
-- Expose barrier/reaction-energy extraction from reweighted FES.
+PLUMED OPES enhanced-sampling input generation for the CO-CO dimerization
+collective variable, following Methods 5.4 of arXiv:2509.17862.
 """
 
 from dataclasses import dataclass
 
+EV_TO_KJ_PER_MOL = 96.48533212
+
 
 @dataclass
 class OPESConfig:
-    cv_atom_indices: tuple[int, int]
+    atom1_index: int
+    atom2_index: int
     barrier_ev: float = 5.0
     pace: int = 500
     upper_wall_angstrom: float = 6.0
-    n_steps: int = 15_000_000  # ~7.5 ns at 0.5 fs timestep
+    upper_wall_kappa: float = 100.0
+    temperature_k: float = 300.0
+    print_stride: int = 10
 
 
-def write_plumed_input(config: OPESConfig, out_path: str):
-    raise NotImplementedError("Phase 1: implement PLUMED OPES input writer")
+def render_plumed_opes_input(config: OPESConfig) -> str:
+    barrier_kj = config.barrier_ev * EV_TO_KJ_PER_MOL
+    lines = [
+        f"cc: DISTANCE ATOMS={config.atom1_index},{config.atom2_index}",
+        "",
+        "opes: OPES_METAD ARG=cc "
+        f"PACE={config.pace} BARRIER={barrier_kj:.4f} "
+        f"TEMP={config.temperature_k} SIGMA=ADAPTIVE",
+        "",
+        f"uwall: UPPER_WALLS ARG=cc AT={config.upper_wall_angstrom} "
+        f"KAPPA={config.upper_wall_kappa}",
+        "",
+        f"PRINT ARG=cc,opes.bias STRIDE={config.print_stride} FILE=COLVAR",
+    ]
+    return "\n".join(lines) + "\n"
 
 
-def check_convergence(fes_blocks, tol_ev: float = 0.02) -> bool:
-    """Return True if block-resolved free energies have converged within tol_ev."""
-    raise NotImplementedError("Phase 4: implement block-uncertainty convergence check")
+def write_plumed_input(config: OPESConfig, out_path: str) -> str:
+    text = render_plumed_opes_input(config)
+    with open(out_path, "w") as fh:
+        fh.write(text)
+    return text
