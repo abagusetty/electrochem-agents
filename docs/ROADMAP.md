@@ -3,7 +3,7 @@
 ## Phase 1 -- Constant-charge MVP (eSEN-OC25 + ASE/PLUMED OPES) -- IMPLEMENTED
 
 Status: core geometry, I/O, PLUMED input generation, and free-energy
-analysis are implemented and unit-tested (19/19 passing on pure numpy, no
+analysis are implemented and unit-tested (23/23 passing on pure numpy, no
 ase/pymatgen/fairchem/JDFTx required for the tested subset).
 
 - systems/water_geometry.py -- rigid TIP3P-like water geometry. Tested.
@@ -17,63 +17,66 @@ ase/pymatgen/fairchem/JDFTx required for the tested subset).
   CURRENT fairchem-core (>=2.x) unified API:
   `pretrained_mlip.get_predict_unit(...)` + `FAIRChemCalculator(...)`
   (verified against facebook/OC25 model card and facebookresearch/fairchem
-  README, 2026-08-12). A legacy fairchem-v1 `OCPCalculator` path is kept
-  as an explicit opt-in for pinned-v1 environments only.
+  README, 2026-08-12).
 - mlip/cp_mace_wrapper.py -- CP-MACE dataset writer and mace_run_train wrapper.
 - md/opes_runner.py -- PLUMED OPES input generator matching Methods 5.4. Tested.
 - md/ase_opes_runner.py -- ASE Langevin MD + `ase.calculators.plumed.Plumed`
-  bias driver (verified current API, requires ASE >=3.23.0 + py-plumed),
-  the actual simulation engine described in the paper.
+  bias driver (verified current API, requires ASE >=3.23.0 + py-plumed).
 - md/lammps_runner.py -- LAMMPS data/input writer for later ML-IAP integration.
 - analysis/free_energy.py -- OPES reweighting, barrier/reaction-energy
   extraction, block-uncertainty convergence check, water-orientation
   analysis. Tested.
 
-### Access / license gate (IMPORTANT, corrected 2026-08-12)
+### Access / license gate (corrected 2026-08-12)
 
-The OC25 **dataset** is CC-BY-4.0 (open). The OC25 **model checkpoints**
-(esen-sm-conserving-all-oc25, esen-md-direct-all-oc25) are distributed
-under Meta's "FAIR Chemistry License" via a GATED Hugging Face repo
-(huggingface.co/facebook/OC25): you must request access (legal name, DOB,
-organization) and accept an Acceptable Use Policy before
-`pretrained_mlip.get_predict_unit(...)` will succeed. Budget time for this
-approval before your first GH200 run.
+OC25 **dataset** = CC-BY-4.0 (open). OC25 model **checkpoints** are gated
+under Meta's "FAIR Chemistry License" (huggingface.co/facebook/OC25);
+request access + `huggingface-cli login` before your first GH200 run.
 
-Remaining Phase 1 work (requires ase/pymatgen/fairchem + GPU + gated HF
-access, must run on GH200/A100):
+## Phase 2 -- CP-DFT audit module -- REVISED 2026-08-12: pymatgen-first design
 
-- End-to-end run: build an 8x8 Cu(100)/water/Cs+ cell, attach eSEN-OC25 via
-  the current FAIRChemCalculator API, run
-  md.ase_opes_runner.run_md_with_opes for the full 7.5 ns, and check the
-  extracted barrier/reaction energy against the paper's reported values
-  (Cu(100): ~0.64 eV barrier, ~0.375 eV reaction energy at PZC).
-- Validate estimate_surface_charge_density against the paper's reported
-  sigma values for matching cation counts.
+cp_dft/jdftx_interface.py now splits across two deliberately chosen tools:
 
-## Phase 2 -- CP-DFT audit module -- INTERFACE STARTED
+1. **pymatgen.io.jdftx (PRIMARY)** -- `JDFTXInfile.from_structure()` for
+   typed, validated input construction and `JDFTXOutfile` for structured
+   output parsing (`.mu` = Fermi energy/electron chemical potential,
+   `.is_gc` = grand-canonical flag, `.forces`, `.structure`, full
+   electronic-minimization history). This is the module atomate2 itself
+   uses for JDFTx I/O (Ganose et al., atomate2 paper, 2025) and is
+   actively maintained (added to pymatgen ~Oct 2024, ongoing PRs through
+   2025). No ASE dependency. `run_jdftx_single_point()` writes the input,
+   runs JDFTx via subprocess, and parses the output -- this is the
+   recommended path for Phase 2's actual need: single-point CP-DFT labels
+   {structure, target-mu, energy, forces} for CP-MACE training data.
 
-- cp_dft/jdftx_interface.py -- wraps the OFFICIAL JDFTx ASE calculator
-  (`from JDFTx import JDFTx`, distributed with JDFTx source under
-  jdftx/scripts/ase; verified against jdftx.org/ASE.html, 2026-08-12).
-  Grand-canonical / constant-potential control uses JDFTx's native
-  `target-mu` command, passed through the calculator's `commands=` dict
-  (the ASE wrapper has no dedicated constant-potential argument of its
-  own -- confirm sign convention/reference level against JDFTx docs before
-  reporting calibrated potentials). Command assembly logic
-  (`build_jdftx_commands`) is unit-tested (4/4 passing) without requiring
-  a JDFTx build.
-- Remaining: build JDFTx from source on target HPC, set PYTHONPATH/
-  JDFTx/JDFTx_pseudo env vars, calibrate target-mu against a known
-  work function for a reference Cu slab, then sample initial/TS/final
-  states from Phase 1 trajectories and label with true electrode
-  potential, energies, forces, and workfunction.
+2. **Official ASE JDFTx calculator (SECONDARY)** -- `load_ase_jdftx_calculator()`,
+   kept ONLY for the case where a step-wise ASE Calculator object is
+   required, i.e. coupling JDFTx to `ase.calculators.plumed.Plumed` for
+   constant-potential enhanced-sampling MD. pymatgen has no MD driver, so
+   this path is unavoidable for that specific use case but should not be
+   used for plain single-point labeling.
+
+Both paths set grand-canonical / constant-potential control via JDFTx's
+native `target-mu` command (electron chemical potential); tag assembly
+logic (`_base_tags`) is unit-tested (4/4 passing) without requiring
+pymatgen, JDFTx, or ASE to be installed. Confirm target-mu's sign
+convention/reference level against JDFTx docs and calibrate against a
+known work function before reporting calibrated electrode potentials.
+
+Remaining Phase 2 work (requires pymatgen>=2025.4 + a JDFTx build + GPU,
+must run on GH200/A100 or a JDFTx-capable node):
+
+- Build JDFTx from source; confirm `pymatgen.io.jdftx` version compatibility.
+- Calibrate target-mu against a known work function for a reference Cu slab.
+- Sample initial/TS/final states from Phase 1 trajectories; label with
+  `run_jdftx_single_point()`.
 - Compare constant-charge (Phase 1) vs constant-potential (Phase 2) free
   energies.
 
 ## Phase 3 -- CP-MACE for Cu interfaces
 
 - Use mlip/cp_mace_wrapper.py to build CP-MACE-format datasets from OC25 +
-  CP-DFT (JDFTx target-mu) labels.
+  CP-DFT (pymatgen/JDFTx target-mu) labels.
 - Train FermiMACE on Cu(100)/Cu(310)/water/cation systems.
 - Validate against CP-DFT and eSEN-OC25 baselines.
 - Run constant-potential MD (CP-MACE simulation/ scripts, or via LAMMPS ML-IAP).

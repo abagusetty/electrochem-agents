@@ -1,31 +1,31 @@
-"""Tests for cp_dft.jdftx_interface command assembly (pure logic, no JDFTx
-executable or PYTHONPATH setup required)."""
+"""Tests for cp_dft.jdftx_interface tag-assembly logic (pure logic; no
+pymatgen, JDFTx executable, or PYTHONPATH setup required)."""
 
-from cp_dft.jdftx_interface import JDFTxConfig, build_jdftx_commands
-
-
-def test_build_jdftx_commands_neutral_run_has_no_target_mu():
-    config = JDFTxConfig(target_mu_hartree=None)
-    commands = build_jdftx_commands(config)
-    assert "target-mu" not in commands
-    assert commands["elec-cutoff"] == "20 100"
-    assert commands["fluid"] == "LinearPCM"
+from cp_dft.jdftx_interface import JDFTxRunConfig, _base_tags
 
 
-def test_build_jdftx_commands_constant_potential_sets_target_mu():
-    config = JDFTxConfig(target_mu_hartree=-0.15)
-    commands = build_jdftx_commands(config)
-    assert commands["target-mu"] == "-0.150000"
+def test_base_tags_neutral_run_has_no_target_mu():
+    config = JDFTxRunConfig(target_mu_hartree=None)
+    tags = _base_tags(config)
+    assert "target-mu" not in tags
+    assert tags["elec-cutoff"] == "20 100"
+    assert tags["fluid"] == "LinearPCM"
 
 
-def test_build_jdftx_commands_extra_commands_override_and_merge():
-    config = JDFTxConfig(extra_commands={"dump": "End ElecDensity", "elec-cutoff": "30"})
-    commands = build_jdftx_commands(config)
-    assert commands["dump"] == "End ElecDensity"
-    assert commands["elec-cutoff"] == "30"
+def test_base_tags_constant_potential_sets_target_mu():
+    config = JDFTxRunConfig(target_mu_hartree=-0.15)
+    tags = _base_tags(config)
+    assert tags["target-mu"] == "-0.150000"
 
 
-def test_build_jdftx_commands_no_fluid_model_omits_fluid_key():
-    config = JDFTxConfig(fluid_model=None)
-    commands = build_jdftx_commands(config)
-    assert "fluid" not in commands
+def test_base_tags_extra_tags_override_and_merge():
+    config = JDFTxRunConfig(extra_tags={"dump": "End ElecDensity", "elec-cutoff": "30"})
+    tags = _base_tags(config)
+    assert tags["dump"] == "End ElecDensity"
+    assert tags["elec-cutoff"] == "30"
+
+
+def test_base_tags_no_fluid_model_omits_fluid_key():
+    config = JDFTxRunConfig(fluid_model=None)
+    tags = _base_tags(config)
+    assert "fluid" not in tags

@@ -1,6 +1,6 @@
 numpy
 scipy
-pymatgen
+pymatgen>=2025.4
 ase>=3.23.0
 torch
 mace-torch
