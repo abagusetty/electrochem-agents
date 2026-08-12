@@ -5,6 +5,7 @@ ase>=3.23.0
 torch
 mace-torch
 fairchem-core
+ag2
 pyyaml
 typer
 matplotlib
