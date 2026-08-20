@@ -23,10 +23,12 @@ The reasoning content lives in agents/system_messages.py and
 agents/reasoning.py, not here -- this module is deliberately thin glue.
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from agents.llm_backend import ALCFLLMConfig
+from agents.vllm_backend import VLLMLLMConfig, VLLMServerConfig
 from agents.system_messages import (
     MANAGER_SYSTEM_MESSAGE,
     SYSTEM_BUILDER_SYSTEM_MESSAGE,
@@ -41,8 +43,52 @@ from agents.system_messages import (
 
 LLMConfig = ALCFLLMConfig  # backward-compatible alias
 
+# ---------------------------------------------------------------------------
+# BACKEND SELECTION
+# ---------------------------------------------------------------------------
+# Default is a LOCAL vLLM-XPU server on the Aurora allocation, not the remote
+# ALCF inference endpoint. Reasons, in order (see agents.vllm_backend):
+#   * compute nodes have no outbound network -- a remote call hangs, silently,
+#     inside the allocation;
+#   * `inference_auth_token.py authenticate` is an interactive browser Globus
+#     flow no batch job can perform, and tokens expire mid-campaign;
+#   * a shared endpoint's models go hot/cold behind other users.
+# The `frameworks` module ships vllm 0.26.1+xpu and vllm-xpu-kernels, so this
+# costs nothing to install -- only GPU tiles, which must be budgeted.
+#
+# Set ELECTROCHEM_LLM_BACKEND=alcf to use the remote endpoint instead, e.g.
+# when driving from a login node.
+LLM_BACKEND = os.environ.get("ELECTROCHEM_LLM_BACKEND", "vllm").lower()
+
+# Remote ALCF endpoint model names.
 REASONING_MODEL_DEFAULT = "Qwen/Qwen3-235B-A22B"
 TOOL_ONLY_MODEL_DEFAULT = "meta-llama/Llama-3.3-70B-Instruct"
+
+# Local vLLM: a filesystem path, because compute nodes cannot download.
+# Stage the weights under $ELECTROCHEM_MODEL_DIR first.
+VLLM_REASONING_MODEL_DEFAULT = os.environ.get(
+    "ELECTROCHEM_VLLM_MODEL", "Qwen/Qwen3-32B")
+VLLM_TOOL_MODEL_DEFAULT = os.environ.get(
+    "ELECTROCHEM_VLLM_TOOL_MODEL", VLLM_REASONING_MODEL_DEFAULT)
+
+
+def default_llm_config(model: str, backend: Optional[str] = None):
+    """Build the right config object for the selected backend.
+
+    One server usually serves BOTH roles: the reasoning/tool-only split exists
+    because the remote endpoint offers different models with different
+    capabilities. Locally there is one server, so both roles point at it unless
+    a second is explicitly started -- serving two large models to save on one
+    role's token cost is a bad trade when tiles are the scarce resource.
+    """
+    backend = (backend or LLM_BACKEND).lower()
+    if backend == "alcf":
+        return ALCFLLMConfig(model=model)
+    if backend == "vllm":
+        return VLLMLLMConfig(model=model)
+    raise ValueError(
+        f"Unknown ELECTROCHEM_LLM_BACKEND={backend!r}; expected 'vllm' (local "
+        "vLLM-XPU server, default) or 'alcf' (remote inference endpoint).")
 
 
 class ElectrochemAgentFactory:
@@ -50,15 +96,27 @@ class ElectrochemAgentFactory:
     electrochemical simulation workflow.
     """
 
-    def __init__(self, reasoning_llm_config: Optional[ALCFLLMConfig] = None,
-                 tool_llm_config: Optional[ALCFLLMConfig] = None):
-        self.reasoning_llm_config = reasoning_llm_config or ALCFLLMConfig(
-            model=REASONING_MODEL_DEFAULT,
-        )
-        self.tool_llm_config = tool_llm_config or ALCFLLMConfig(
-            model=TOOL_ONLY_MODEL_DEFAULT,
-        )
+    def __init__(self, reasoning_llm_config=None, tool_llm_config=None,
+                 backend: Optional[str] = None):
+        backend = (backend or LLM_BACKEND).lower()
+        self.backend = backend
+        reasoning_default = (VLLM_REASONING_MODEL_DEFAULT if backend == "vllm"
+                             else REASONING_MODEL_DEFAULT)
+        tool_default = (VLLM_TOOL_MODEL_DEFAULT if backend == "vllm"
+                        else TOOL_ONLY_MODEL_DEFAULT)
+        self.reasoning_llm_config = (
+            reasoning_llm_config or default_llm_config(reasoning_default, backend))
+        self.tool_llm_config = (
+            tool_llm_config or default_llm_config(tool_default, backend))
         self.llm_config = self.reasoning_llm_config
+
+    @classmethod
+    def from_vllm_server(cls, server_config: VLLMServerConfig,
+                         temperature: float = 0.1) -> "ElectrochemAgentFactory":
+        """Point every agent at one already-running local server."""
+        config = VLLMLLMConfig.from_server(server_config, temperature=temperature)
+        return cls(reasoning_llm_config=config, tool_llm_config=config,
+                   backend="vllm")
 
     def _base_kwargs(self, system_message: str, reasoning: bool) -> dict:
         config = self.reasoning_llm_config if reasoning else self.tool_llm_config
