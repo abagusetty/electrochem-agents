@@ -78,15 +78,42 @@ SUPPORTED_DEVICES = ("cuda", "cpu")
 def fairchem_accepts_xpu() -> bool:
     """Whether the INSTALLED fairchem has been taught about XPU.
 
-    Read from the installed source rather than tracked as a constant, so this
-    stays correct after `scripts/patch_fairchem_xpu.py` runs (or after a pip
-    upgrade silently reverts it). Cheap: one find_spec plus one file read.
+    Determined from the installed package rather than tracked as a constant, so
+    this stays correct after the XPU port is installed (or after a pip upgrade
+    silently reverts to stock fairchem).
+
+    Two shapes of XPU-capable fairchem exist, and both must be recognised:
+
+    1. **The ported fork** (github.com/abagusetty/fairchem, branch
+       `xpu-support`) exposes `fairchem.core.common.device_utils` with an
+       explicit table of supported device types. Ask that table -- it is the
+       package's own answer, not a guess about its source text.
+    2. **A locally patched stock install** via
+       `scripts/patch_fairchem_xpu.py`, which edits the inline
+       `assert device in [...]` list in place. There is no table to query, so
+       fall back to scanning the source for "xpu" in that list.
+
+    The source scan alone is not sufficient: the port replaces the inline list
+    with a named constant, so the literal `"xpu",` never appears in predict.py
+    and a scan-only check reports a working install as unsupported.
     """
     import importlib.util
 
     override = os.environ.get("ELECTROCHEM_FAIRCHEM_XPU")
     if override is not None:
         return override.lower() in ("1", "true", "yes")
+
+    # (1) Ported fork: ask the package directly.
+    try:
+        from fairchem.core.common.device_utils import (  # noqa: PLC0415
+            SUPPORTED_DEVICE_TYPES,
+        )
+
+        return "xpu" in SUPPORTED_DEVICE_TYPES
+    except Exception:                                           # noqa: BLE001
+        pass
+
+    # (2) Locally patched stock install: scan the assert's device list.
     try:
         spec = importlib.util.find_spec("fairchem.core.units.mlip_unit.predict")
         if spec is None or not spec.origin:
@@ -94,7 +121,6 @@ def fairchem_accepts_xpu() -> bool:
         text = Path(spec.origin).read_text()
     except Exception:                                           # noqa: BLE001
         return False
-    # The patched assert lists "xpu" among the accepted devices.
     return '"xpu",' in text or "'xpu'," in text or '"xpu"]' in text
 
 
