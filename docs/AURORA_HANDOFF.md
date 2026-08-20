@@ -47,6 +47,31 @@ That last line must still print `2.13.0a0+gitcf30153 True`. If the version
 changed, something replaced torch — see the `--no-deps` note in
 `requirements-aurora.txt`.
 
+**Confirmed on Sunspot 2026-08-20** `[V-9]`: `frameworks/2026.1.0` gives
+`torch 2.13.0a0+gitcf30153`, `torch.xpu.is_available() True`, **12 devices**
+(6 × Max 1550 × 2 tiles), `numpy 2.3.5`, `triton-xpu 3.7.2`.
+
+The `--no-deps` hazard is **real, not hypothetical** — reproduced live: fairchem
+pins `torch~=2.13.0`, and `2.13.0a0` sorts *below* `2.13.0` under PEP 440, so an
+unconstrained `pip install fairchem-core` genuinely resolves a PyPI torch. A
+constraints file is the cheap guard:
+
+```bash
+printf 'torch==2.13.0a0+gitcf30153\nnumpy==2.3.5\n' > /tmp/aurora-constraints.txt
+pip install -c /tmp/aurora-constraints.txt <pkg>     # fails loudly instead of swapping torch
+```
+
+Absent from the module and therefore unavoidable installs (checked against all
+276 module packages): `ase`, `pymatgen`, `e3nn`, `fairchem-core`, plus
+`lmdb orjson submitit hydra-core torchtnt monty wandb clusterscope
+ase-db-backends pymatgen-core opt_einsum_fx pyre-extensions tensorboard`.
+None of these shadow a module-provided package.
+
+Sunspot compute nodes **do** have outbound network through
+`http_proxy=http://proxy.alcf.anl.gov:3128`, so `pip` and `huggingface_hub`
+work in-job. This contradicts the "no outbound network" note elsewhere in this
+document; trust this line, it was measured. `[V-9]`
+
 ### Already in the module (do not install)
 
 `numpy 2.3.5` · `scipy` · `scikit-learn` · `matplotlib` · `pandas` · `h5py` ·
@@ -130,7 +155,60 @@ Clone and run locally: fine. Vendoring its code or redistributing its
 integrator from your checkout for exactly this reason — keep it that way.
 Upstream is also unmaintained (last push 2025-09-16), so pin a commit.
 
-### Route A — fairchem: does NOT run on XPU as shipped
+### Route A — fairchem: **ported to XPU, verified on Sunspot** `[V-9]`
+
+> **Status changed 2026-08-20.** A full CUDA→XPU port now exists at
+> **github.com/abagusetty/fairchem, branch `xpu-support`**, and it has been run
+> on real hardware rather than reasoned about. Prefer it over the local patch
+> script below; the patch script remains valid for a stock install you do not
+> want to replace.
+>
+> The port adds `fairchem/core/common/device_utils.py` — a device abstraction
+> built on torch's own generic APIs (`get_device_module`, `torch.accelerator`,
+> `torch.amp.autocast`) — and routes every CUDA call site through it, rather
+> than widening the assert alone. Behaviour on NVIDIA is unchanged.
+>
+> Things the 6-edit patch does **not** cover, found while porting `[C]`:
+>
+> * `layer_norm.py`, `normalizer.py`, `element_references.py` carry
+>   `@torch.autocast("cuda", enabled=False)` + `("cpu", ...)` decorator pairs
+>   with no `xpu` sibling, so autocast would **not** be disabled on XPU where
+>   the author intended it to be.
+> * `graph_parallel_a2a.py` selects the native `all_to_all` path with
+>   `backend == "nccl"`, silently demoting oneCCL to pairwise send/recv.
+> * `distutils.py` logs `CUDA_VISIBLE_DEVICES` on a machine masked by
+>   `ZE_AFFINITY_MASK` / `ONEAPI_DEVICE_SELECTOR` — a confident "None" hiding a
+>   real misconfiguration.
+> * `rotation_cuda_graph.py` graph capture — `torch.xpu` does expose
+>   `make_graphed_callables` and `Stream`, so it ports cleanly.
+>
+> **Collectives use `xccl`, and `xccl` *is* oneCCL** — not a separate library.
+> Verified on Sunspot: `libtorch_xpu.so` links `libccl.so.1`/`libccl.so.2` from
+> `/opt/aurora/.../oneapi/ccl/latest/lib` and exports `onecclAllReduce`,
+> `onecclAllToAll`, `onecclAllGather`. `[V-9]` The *legacy* out-of-tree name is
+> `"ccl"` (via `oneccl_bindings_for_pytorch`), which is **absent** from
+> `frameworks/2026.1.0` — requesting it fails with "Backend not registered".
+> PyTorch's own `Backend.default_device_backend_map` maps `xpu -> xccl`. NCCL is
+> unavailable in this build (`is_nccl_available() == False`).
+>
+> UMA-S's fused Triton path stays **opt-in** off CUDA
+> (`FAIRCHEM_ENABLE_TRITON_XPU=1`): those kernels are autotuned for NVIDIA
+> occupancy, so compiling on XPU implies neither correctness nor speed.
+>
+> Verified on a Sunspot compute node (Intel Data Center GPU Max 1550, torch
+> `2.13.0a0+gitcf30153`, 12 tiles), on a Cu bulk cell: `[V-9]`
+>
+> * forward — energy and forces on `xpu:0`, finite;
+> * **backward** — conservative forces `-dE/dx` from on-device autograd, and 79
+>   parameter-gradient tensors all finite and non-zero. This is the check that
+>   separates "loads and returns an energy" from "can do MD";
+> * **XPU and CPU energies agree to 1e-3** on identical weights and input;
+> * fairchem's own suite: 417 passed / 50 skipped in the touched areas, plus 27
+>   new device tests. The 15 graph-parallel failures were **pre-existing** —
+>   the tests hard-code `PGConfig(backend="nccl")`, and they fail identically on
+>   stock upstream on this machine. The port makes them follow the device type.
+
+### The original blocker, for reference — fairchem does NOT run on XPU as shipped
 
 `src/fairchem/core/units/mlip_unit/predict.py`:
 
@@ -181,10 +259,10 @@ the currency of the collaboration.
 
 | Gate | State | Action |
 |---|---|---|
-| **G1** OC25 checkpoints | gated HF repo, Meta FAIR Chemistry License | request access, `hf auth login`, stage to `$ELECTROCHEM_MODEL_DIR` — **compute nodes have no outbound network** |
+| **G1** OC25 checkpoints | **OPEN — the HF account is not on the approved list.** `facebook/OC25` and `facebook/UMA` are both `gated=manual`. Tested 2026-08-20 with a token for account `quark58`: authentication succeeds and repo *metadata* reads fine, but **every** file 403s "not in the authorized list" — including a 1 KB `config.json`. Two traps recorded so a future session does not re-debug them: (a) `model_info()` succeeding does **not** imply file access, metadata is public on gated repos; (b) the token is **not** the problem here — its scopes show `canReadGatedRepos: true`, so a read-only fine-grained token is sufficient *once access is granted*. `[V-9]` | A human must request access at huggingface.co/facebook/OC25 and be approved by Meta (manual review: legal name, DOB, organisation, FAIR Chemistry License). Then stage `checkpoints/esen_sm_conserve.pt` (51 MB, this is the Route-A model) and/or `checkpoints/esen_md_direct.pt` (406 MB). Sunspot compute nodes **do** have outbound network via `http_proxy=proxy.alcf.anl.gov:3128`, so staging can happen in-job. `[V-9]` |
 | **G2** `JDFTXOutfile` attrs | CLOSED — `.e .forces .mu .converged .etype .is_gc` confirmed | — |
 | **G3** JDFTx GPU on Aurora | CLOSED — internal SYCL port | stage pseudopotentials; confirm `pcm-variant CANDLE` for your build |
-| **G4** MLIP on XPU | ANSWERED, split: CP-MACE yes, fairchem needs the patch | run `check_aurora_env.py --deep` |
+| **G4** MLIP on XPU | **CLOSED for Route A — fairchem ported and verified on hardware.** `check_aurora_env.py` passes all four checks on a Sunspot compute node; a full CUDA→XPU port of fairchem runs eSCN-MD fwd+bwd on PVC. `[V-9]` | Route B (CP-MACE) still unrun — it was only ever a source-reading verdict |
 | **G5** Agent LLM | restructured — local vLLM-XPU, no Globus, no network | verify the tool-call parser (§7) |
 | **G8** CP-MACE licence | open | email the authors for an explicit grant |
 | **G10** scoop risk | live | the anchor authors know this gap; move on Phase 0 |
