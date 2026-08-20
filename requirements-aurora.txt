@@ -1,0 +1,112 @@
+# Aurora `frameworks` module + venv --system-site-packages.
+#
+# Install with --no-deps. See the WHY below; it is not optional.
+#
+#   module load frameworks
+#   python -m venv --system-site-packages elechem-venv && . elechem-venv/bin/activate
+#   pip install --no-deps -r requirements-aurora.txt
+#
+# ---------------------------------------------------------------------------
+# WHY --no-deps IS MANDATORY HERE
+# ---------------------------------------------------------------------------
+# The module ships torch 2.13.0a0+gitcf30153 -- an ALCF source build with the
+# XPU backend. Two things make ordinary resolution dangerous:
+#
+#   1. fairchem-core, mace and e3nn all declare a torch dependency. With deps
+#      enabled, pip may fetch a PyPI torch wheel, which is CUDA or CPU only.
+#      That wheel SHADOWS the XPU build and every XPU path silently dies.
+#   2. fairchem-core pins `torch~=2.13.0`, i.e. >=2.13.0,<2.14.0. The module
+#      ships 2.13.0a0+gitcf30153, and under PEP 440 an ALPHA SORTS BELOW the
+#      release: 2.13.0a0 < 2.13.0. Verified with packaging.specifiers --
+#      `~=2.13.0` is NOT satisfied, even with prereleases=True. So pip will
+#      genuinely try to fetch torch 2.13.0 from PyPI and replace the XPU
+#      build. This is not a hypothetical.
+#      (A looser pin such as `torch>=2.1` IS satisfied by 2.13.0a0 -- the
+#      problem is specific to floors at or above 2.13.0.)
+#
+# Same hazard for numpy: the module has 2.3.5, and anything pinning numpy<2
+# will downgrade it out from under torch.
+#
+# After installing, ALWAYS confirm nothing moved:
+#   python -c "import torch;print(torch.__version__, torch.xpu.is_available())"
+#   -> must still print 2.13.0a0+gitcf30153 True
+# ---------------------------------------------------------------------------
+
+# --- required, absent from the module ---
+ase>=3.26.0                  # slabs, MD, ase.calculators.plumed.Plumed.
+                             #   3.26 not 3.23: fairchem-core requires >=3.26.0
+pymatgen>=2025.4             # pymatgen.io.jdftx (JDFTXInfile / JDFTXOutfile)
+ag2                          # provides the `autogen` module for the agent layer
+
+# --- e3nn: not imported by us, but REQUIRED by fairchem ---
+# Nothing in this repo imports e3nn. However fairchem-core declares
+# `e3nn>=0.5` as a hard dependency, and MACE pulls it too -- so with --no-deps
+# you must install it explicitly alongside Route A. It is also the cheapest
+# standalone probe:
+# Install it standalone ONLY to run scripts/check_aurora_env.py before the
+# heavy stacks exist: the Clebsch-Gordan tensor product is the op equivariant
+# MLIPs spend their time in, and on Aurora it must run e3nn's native pure-torch
+# path (cuEquivariance is NVIDIA-only; OpenEquivariance is CUDA+HIP-only --
+# verified 2026-08-20, no SYCL/XPU backend and no open issue requesting one).
+# So a 5-second e3nn fwd+bwd answers "will MACE run on XPU" without
+# downloading a gated checkpoint.
+e3nn>=0.5
+
+# --- transitive deps that --no-deps will skip; add only if import fails ---
+# monty
+# spglib
+# ruamel.yaml
+# palettable
+# uncertainties
+# opt_einsum
+# opt_einsum_fx
+
+# ---------------------------------------------------------------------------
+# ALREADY IN THE MODULE -- do not install, do not list
+# ---------------------------------------------------------------------------
+# torch 2.13.0a0+gitcf30153 (XPU)   triton-xpu 3.7.2      dpctl / dpnp
+# numpy 2.3.5   scipy 1.18.0        scikit-learn 1.9.0    matplotlib 3.11.1
+# pandas   h5py   sympy   networkx  einops   mpi4py 4.1.2
+# PyYAML   requests   openai 2.52.0   typer   pytest 9.0.3
+# transformers   huggingface_hub   vllm(XPU)   mcp   ray   anthropic
+#
+# intel_extension_for_pytorch is NOT present and NOT needed: torch 2.13 has
+# XPU upstreamed.
+#
+# ---------------------------------------------------------------------------
+# SEPARATE ENVS -- one each, never together
+# ---------------------------------------------------------------------------
+# Route A:  pip install --no-deps fairchem-core
+#           plus its own absent deps: lmdb orjson submitit hydra-core torchtnt
+#           monty wandb clusterscope ase-db-backends
+#           (already in the module: ray numba scipy numpy huggingface_hub
+#            requests tqdm pyyaml websockets setuptools<81)
+#
+#           *** DOES NOT RUN ON XPU. *** predict.py asserts
+#           `device in ["cpu","cuda"]`, so Intel GPUs are unimplemented, not
+#           untested. On Aurora that leaves CPU, or an NVIDIA system, or a
+#           patch (no CUDA sources exist, so the block is shallow -- the
+#           assert, device resolution, and the NCCL backend choice).
+#           See mlip/esen_oc25.py and RESEARCH_PLAN.md G4.
+#
+#           Checkpoints are GATED: request at huggingface.co/facebook/OC25,
+#           then `hf auth login`. Stage them to $ELECTROCHEM_MODEL_DIR --
+#           compute nodes have no outbound network.
+#
+# Route B:  pip install --no-deps ./mace      (from your CP-MACE checkout)
+#           *** THE AURORA-NATIVE PATH. *** mace/tools/torch_tools.py
+#           init_device has an explicit `elif device_str == "xpu"` branch.
+#           Caveat: unlike its cuda/mps branches it does NOT assert
+#           availability, so it hands back torch.device("xpu") even when no
+#           XPU exists -- check torch.xpu.is_available() yourself first.
+#           NEVER alongside upstream `mace-torch`: both provide the module name
+#           `mace`, upstream has no Fermi level, and the committee would lose
+#           sigma_mu silently. Neither is in the module, so there is no
+#           pre-existing collision to clean up -- keep it that way.
+#           CP-MACE ships no LICENSE: run locally, do not vendor/redistribute.
+#
+# NOT pip-installable:
+#   py-plumed    build with PLUMED (--enable-modules=opes); export PLUMED_KERNEL
+#   JDFTx        internal SYCL build + pseudopotentials
+#   globus-sdk   only needed by inference_auth_token.py, and only if you use
+#                the ALCF inference endpoints rather than local vLLM-XPU

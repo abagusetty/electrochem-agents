@@ -1,14 +1,44 @@
+# Core -- hpc/, data/, acquisition/, analysis/, cp_dft/calibration need ONLY
+# these two. Deliberate: a finished campaign can be analysed on a laptop with
+# no simulation stack installed.
 numpy
-scipy
-pymatgen>=2025.4
-ase>=3.23.0
-torch
-mace-torch
-fairchem-core
-ag2
-openai
-requests
-globus-sdk
 pyyaml
-typer
-matplotlib
+
+# Structure construction, MD, and JDFTx I/O.
+# pymatgen>=2025.4 for pymatgen.io.jdftx (JDFTXInfile / JDFTXOutfile).
+# As of 2026 that code ships in the `pymatgen-core` distribution, pulled in
+# transitively by `pymatgen`.
+ase>=3.23.0
+pymatgen>=2025.4
+
+# Agent layer. `ag2` provides the `autogen` module.
+# ALCF token handling is NOT a package: fetch inference_auth_token.py from
+# github.com/argonne-lcf/inference-endpoints and run
+# `python inference_auth_token.py authenticate` once (interactive Globus login).
+ag2
+requests
+
+# ---------------------------------------------------------------------------
+# NOT INSTALLED VIA PIP ON AURORA
+# ---------------------------------------------------------------------------
+# torch          -- provided by `module load frameworks`, built with XPU
+#                   support. A PyPI wheel is CUDA or CPU only and will SHADOW
+#                   the working build. Do not pip install it.
+# oneAPI SDK     -- same module.
+# intel_extension_for_pytorch -- optional; the module's torch has XPU
+#                   upstreamed. Only add if a stack demands the import.
+#
+# fairchem-core  -- >=2.x, Route A (eSEN-OC25). Install in its own env.
+#                   Checkpoints are GATED: request access at
+#                   huggingface.co/facebook/OC25 and `huggingface-cli login`.
+# CP-MACE        -- Route B. Install `pip install ./mace` FROM YOUR CP-MACE
+#                   CHECKOUT, in its own env. Do NOT also install `mace-torch`:
+#                   both provide the module name `mace`, and upstream MACE has
+#                   no Fermi level, so the committee silently loses sigma_mu.
+#                   That repo ships no LICENSE -- run locally, do not vendor or
+#                   redistribute.
+# py-plumed      -- PLUMED python bindings, needed by
+#                   ase.calculators.plumed.Plumed. Requires PLUMED built with
+#                   --enable-modules=opes. Export PLUMED_KERNEL.
+# JDFTx          -- SYCL build (internal), pseudopotentials, and optionally
+#                   jdftx/scripts/ase on PYTHONPATH for the DFT-MD path.
