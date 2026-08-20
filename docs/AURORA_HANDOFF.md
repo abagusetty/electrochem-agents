@@ -36,6 +36,14 @@ the rejection packer; IF-valid on a generated interface.
 CUDA or CPU only and will shadow the working build.
 
 ```bash
+bash scripts/setup_sunspot_env.sh          # verified end-to-end on Sunspot
+```
+
+That script is the recipe below with the torch/numpy guard already applied; it
+is idempotent and self-verifying, and it exits non-zero if anything replaced
+torch. Manual equivalent:
+
+```bash
 module load frameworks
 python -m venv --system-site-packages elechem-venv
 source elechem-venv/bin/activate
