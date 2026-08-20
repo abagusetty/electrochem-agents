@@ -264,7 +264,13 @@ def locate(module: str) -> Path:
     """Find an installed module's source file without importing fairchem."""
     import importlib.util
 
-    spec = importlib.util.find_spec(module)
+    try:
+        spec = importlib.util.find_spec(module)
+    except (ImportError, ValueError):
+        # find_spec raises ModuleNotFoundError when a PARENT package is absent,
+        # rather than returning None. Without this the script dies with a
+        # traceback instead of the actionable message below.
+        spec = None
     if spec is None or not spec.origin:
         raise FileNotFoundError(
             f"Cannot locate {module}. Is fairchem-core installed in this "
