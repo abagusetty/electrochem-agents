@@ -1,0 +1,96 @@
+# Constant-potential acquisition campaign on ALCF Aurora.
+#
+# Every value here is a STARTING POINT, not a verified setting. The ones most
+# likely to be wrong for your allocation are marked CHECK.
+
+name: cu_co_dimerization_cp
+created_utc: "2026-08-20T00:00:00Z"
+notes: >
+  Explicit-solvent grand-canonical CO dimerization on Cu(100)/Cu(310).
+  Primary comparison: A1_sigma_mu vs B2_force_uncertainty on cost-to-reproduce
+  the anchor paper's reported barriers and reaction energies.
+
+hpc:
+  project: UNSET            # CHECK: your PBS account (qsub -A)
+  queue: prod               # CHECK: debug (<=2 nodes, short) while shaking out
+  nodes: 8
+  walltime: "06:00:00"
+  filesystems: flare:home
+  ranks_per_node: 12        # one MPI rank per PVC tile (FLAT hierarchy)
+  atoms_per_rank: 8         # scaled x8 internally for the GPU build
+  modules: [frameworks]     # CHECK against docs.alcf.anl.gov
+  launcher: pbs             # pbs | bundle (inside an allocation) | local
+  nodes_per_task: 2         # only used by the bundle launcher
+  jdftx_gpu: true           # SYCL build assumed present
+  jdftx_sycl: true
+  # root: /lus/flare/projects/<project>/<campaign>   # else derived
+  # affinity_script: /path/to/gpu_tile_compact.sh
+  env: {}
+
+# Absolute paths to already-installed software. Anything left null falls back
+# to the matching ELECTROCHEM_* environment variable.
+software:
+  jdftx_gpu_bin: null       # SYCL build of jdftx
+  jdftx_bin: null           # CPU fallback
+  jdftx_pseudo_dir: null    # GBRV / SG15 root
+  plumed_kernel: null       # libplumedKernel.so
+  cp_mace_repo: null        # local CP-MACE checkout (NOT vendored: no LICENSE)
+  cp_mace_commit: null      # pin it; upstream unmaintained since 2025-09-16
+  model_dir: null           # staged checkpoints; compute nodes have no network
+  python_env: null
+
+# JDFTx protocol. FIXED for the whole campaign -- mixing these across a
+# dataset teaches a model the difference between protocols, not the physics.
+jdftx:
+  elec_ex_corr: gga-PBE
+  elec_cutoff_eh: 20.0
+  elec_cutoff_rho_eh: 100.0
+  elec_smearing_width_eh: 0.01
+  fluid: LinearPCM
+  pcm_variant: CANDLE       # CHECK: your build may expose CANDLE differently
+  fluid_solvent: H2O
+  fluid_cation: Na+
+  fluid_anion: F-
+  fluid_concentration_mol_l: 1.0
+  coulomb_interaction: Slab 001
+  symmetries: none
+  pseudo_set: GBRV-pbe
+
+# Exploration space. `controls` are target-mu in eV; convert from V vs SHE
+# with cp_dft.calibration after running `calibrate`.
+space:
+  facets: ["100", "310"]
+  control_kind: target_mu_ev
+  controls: [-4.40, -4.20, -4.00, -3.80]
+  cations: [null, "K"]
+  n_cation: 2
+  nx: 8
+  ny: 8
+
+budget:
+  dft_calls: 200            # grand-canonical single points, TOTAL per arm
+  md_ns: 50.0
+  rounds: 5
+  per_round: 20
+
+tolerance_ev: 0.05          # |ours - anchor| counting as reproduced
+
+# Agent LLM. Default backend is a LOCAL vLLM-XPU server on this allocation --
+# compute nodes have no outbound network, and the interactive Globus login the
+# remote ALCF endpoint needs cannot happen in a batch job.
+llm:
+  backend: vllm                 # vllm | alcf
+  model: /lus/flare/projects/<project>/models/Qwen3-32B   # CHECK: stage weights first
+  tensor_parallel_size: 4       # PVC tiles spent on inference, not science
+  max_model_len: 32768
+  gpu_memory_utilization: 0.85
+  tool_call_parser: auto        # auto-detects: hermes / llama3_json / openai / mistral
+  port: 8000
+  # Tool calling needs BOTH --enable-auto-tool-choice AND a parser matching the
+  # model's chat template. Wrong parser = server starts, agents run, and no
+  # tool is ever actually invoked. VLLMServer.verify_tool_calling() checks it.
+
+policy:
+  tau_mu: 0.02              # PLACEHOLDER -- overwritten by calibration
+  tau_force: 0.05
+  seed: 0
